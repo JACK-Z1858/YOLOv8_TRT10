@@ -29,7 +29,8 @@ def make_anchors(feats: Tensor,
         stride_tensor.append(torch.full((h * w, 1), stride, dtype=dtype, device=device))
         # 最后将所有特征图的锚点和步长张量拼接成一个大的张量，并返回
     return torch.cat(anchor_points), torch.cat(stride_tensor)
-        
+
+# 定义一个自定义的 PyTorch autograd 函数，用于实现 TensorRT 的非极大值抑制（NMS）操作      
 class TRT_NMS(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -81,8 +82,9 @@ class TRT_NMS(torch.autograd.Function):
                    outputs=4)
         num_dets, boxes, scores, labels = out
         return num_dets, boxes, scores, labels
-    
-class C2f(nn.Module):
+
+# 定义一个新的类 C2f_TRT，继承自 nn.Module，用于实现优化后的 C2f 模块   
+class C2f_TRT(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
     
@@ -92,18 +94,51 @@ class C2f(nn.Module):
         x.extend(self.m(x) for m in self.m)
         x.pop(1)
         return self.cv2(torch.cat(x, dim=1)) 
-    
+
+# 定义一个新的类 PostDetect，继承自 nn.Module，用于实现优化后的 Detect 模块的后处理逻辑   
 class PostDetect(nn.Module):
-    def __init__(self, num_classes: int, anchors: Tensor, strides: Tensor):
-        super(PostDetect, self).__init__()
-        self.num_classes = num_classes
-        self.anchors = anchors
-        self.strides = strides
+    export = True
+    shape = None
+    dynamic = False
+    iou_thres = 0.65
+    conf_thres = 0.25
+    topk = 100
     
-    def forward(self, feats: Tensor) -> Tuple[Tensor, Tensor]:
-        # Placeholder for the actual post-processing implementation
-        # This function should take the raw output from the model and convert it into bounding boxes and class scores.
-        pass
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+    
+    # x 是一个包含多个特征图的列表 
+    def forward(self, x):
+        shape = x[0].shape
+        # batch，结果列表，回归信息维度，回归信息维度等于 reg_max * 4，因为每个边界框有4个坐标值，每个坐标值有 reg_max 个离散化的回归值
+        b, res, b_reg_num = shape[0], [], self.reg_max * 4
+        # nl: number of layers，num_anchors: 每个特征图上的锚点数量，num_classes: 类别数量
+        for i in range(self.nl):
+            # cv2:边界框回归，cv3:类别预测，拼接后得到一个(batch, b_reg_num + num_classes, h, w)的张量
+            # dims=1表示在特征维度上进行拼接，得到的结果是每个anchor对应一个包含回归和分类信息的向量
+            # [batch, b_reg_num = 64, h, w] + [batch, num_classes = 80, h, w] -> [batch, 64 + 80, h, w]
+            res.append(torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), dim=1))
+        if self.dynamic or self.shape != shape:
+            self.anchors, self.strides = (x.transpose(
+                0, 1) for x in make_anchors(x, self.stride, 0.5))
+            self.shape = shape
+        # 将每个特征图的结果调整形状为 (batch, b_reg_num + num_classes, num_anchors(h * w))，然后在第2个(0, 1, 2)维度上拼接
+        x = [i.view(b, self.no, -1) for i in res]
+        y = torch.cat(x, dim=2)
+        # 将回归信息和分类信息分开，回归信息的形状为 (batch, b_reg_num, num_anchors)，分类信息经过形状为 (batch, num_classes, num_anchors)
+        boxes, scores = y[:, :b_reg_num, ...], y[:, b_reg_num:, ...].sigmoid()
+        # (b, 64, 8400) -> (b, 4, 16, 8400) -> (b, 4, 8400, 16)
+        boxes = boxes.view(b, 4, self.reg_max, -1).permute(0, 1, 3, 2)
+        # [1, 4, 8400, 16] @ [16] -> [1, 4, 8400]，通过softmax将离散化的回归值转换为连续的坐标值，得到每个边界框的坐标信息
+        boxes = boxes.softmax(dim=-1) @ torch.arange(self.reg_max).to(boxes)
+        # dim[1] = [l, t, r, b]，分别表示边界框的左、上、右、下坐标值
+        boxes0, boxes1 = -boxes[:, :2, ...], boxes[:, 2:, ...]
+        boxes = self.anchors.repeat(b, 2, 1) + torch.cat((boxes0, boxes1), dim=1)
+        boxes = boxes * self.strides
+        
+        return TRT_NMS.apply(boxes.transpose(1, 2), scores.transpose(1, 2), 
+                             self.iou_thres, self.conf_thres, self.topk)
+        
     
 class PostSeg(nn.Module):
     def __init__(self, num_classes: int):
@@ -114,7 +149,9 @@ class PostSeg(nn.Module):
     def forward(self, feats: Tensor) -> Tensor:
         # Placeholder for the actual post-processing implementation for segmentation
         pass
-    
+
+# 替换模型的类为优化后的类，以便在推理过程中使用更高效的实现
+# 修改__class__属性不会重新初始化对象，因此原有的属性和方法仍然保留，但新的类可以覆盖或添加新的方法来实现优化后的功能   
 def optim(model: nn.Module) -> nn.Module:
     s = str(type(model)[6:-2].split('.')[-1])
     if s == 'Detect':
@@ -122,4 +159,4 @@ def optim(model: nn.Module) -> nn.Module:
     elif s == 'Segment':
         setattr(model, '__class__', PostSeg)
     elif s == 'C2f':
-        setattr(model, '__class__', C2f)
+        setattr(model, '__class__', C2f_TRT)

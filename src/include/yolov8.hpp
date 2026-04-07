@@ -130,30 +130,173 @@ YOLOv8::~YOLOv8(){
 
 /* 初始化推理管道 */
 void YOLOv8::make_pipe(bool warmup) {
-    
-}
+    for (auto& bindings : this->input_bindings) {
+        void* d_ptr;
+        CHECK(cudaMallocAsync(&d_ptr, bindings.size * bindings.dsize, this->stream));
+        this->device_ptrs.push_back(d_ptr);
+        
+        auto name = bindings.name.c_str();
+        this->context->setInputShape(name, bindings.dims);
+        this->context->setTensorAddress(name, d_ptr);
+    }
 
-void YOLOv8::copy_from_Mat(const cv::Mat& image) {
+    for (auto& bindings : output_bindings) {
+        void *d_ptr, *h_ptr;
+        size_t size = bindings.size * bindings.dsize;
+        CHECK(cudaMallocAsync(&d_ptr, size, this->stream));
+        CHECK(cudaHostAlloc(&h_ptr, size, 0));
+        this->device_ptrs.push_back(d_ptr);
+        this->host_ptrs.push_back(h_ptr);
 
-}
+        auto name = bindings.name.c_str();
+        this->context->setTensorAddress(name, d_ptr);
 
-void YOLOv8::copy_from_Mat(const cv::Mat& iamge, cv::Size& size) {
-
+        if (warmup) {
+            for (int i = 0; i < 10; ++i) {
+                for (auto& bindings : this->input_bindings) {
+                    size_t size = bindings.size * bindings.dsize;
+                    void *h_ptr = malloc(size);
+                    memset(h_ptr, 0, size);
+                    CHECK(cudaMemcpyAsync(this->device_ptrs[0], h_ptr, size, cudaMemcpyHostToDevice, this->stream));
+                    free(h_ptr);
+                }
+                this->infer();
+            }
+            printf("model warmup 10 times\n");
+        }
+    }
 }
 
 /* 等比例缩放图片到 640x640 */
 void YOLOv8::letterbox(const cv::Mat& image, cv::Mat& out, cv::Size& size) {
+    const float inp_h   = size.height;
+    const float inp_w   = size.width;
+    float       height  = image.rows;
+    float       width   = image.cols;
 
+    float r     = std::min(inp_h / height, inp_w / width);
+    int   padw  = std::round(width * r);
+    int   padh  = std::round(height * r);
+    
+    cv::Mat tmp;
+    if ((int)width != padw || (int)height != padh) {
+        cv::resize(image, tmp, cv::Size(padw, padh));
+    }
+    else {
+        tmp = image.clone();
+    }
+
+    float dw = inp_w - padw;
+    float dh = inp_h - padh;
+
+    dw /= 2.0f;
+    dh /= 2.0f;
+    int top     = int(std::round(dh - 0.1f));
+    int bottom  = int(std::round(dh + 0.1f));
+    int left    = int(std::round(dw - 0.1f));
+    int right   = int(std::round(dw + 0.1f));
+
+    cv::copyMakeBorder(tmp, tmp, top, bottom, left, right, cv::BORDER_CONSTANT, {114, 114, 114});
+
+    out.create({1, 3, (int)inp_h, (int)inp_w}, CV_32F);
+
+    std::vector<cv::Mat> channels;
+    cv::split(tmp, channels);
+
+    cv::Mat c0((int)inp_h, (int)inp_w, CV_32F, (float*)out.data);
+    cv::Mat c1((int)inp_h, (int)inp_w, CV_32F, (float*)out.data + (int)inp_h * (int)inp_w);
+    cv::Mat c2((int)inp_h, (int)inp_w, CV_32F, (float*)out.data + (int)inp_h * (int)inp_w * 2);
+
+    // convertTo 只支持 2 维
+    channels[0].convertTo(c2, CV_32F, 1 / 255.f);
+    channels[1].convertTo(c1, CV_32F, 1 / 255.f);
+    channels[2].convertTo(c0, CV_32F, 1 / 255.f);
+
+    this->pparam.ratio  = 1 / r;
+    this->pparam.dw     = dw;
+    this->pparam.dh     = dh;
+    this->pparam.height = height;
+    this->pparam.width  = width;
+}
+
+void YOLOv8::copy_from_Mat(const cv::Mat& image) {
+    cv::Mat  nchw;
+    auto&    in_binding = this->input_bindings[0];
+    int      width      = in_binding.dims.d[3];
+    int      height     = in_binding.dims.d[2];
+    cv::Size size(width, height);
+    this->letterbox(image, nchw, size);
+
+    CHECK(cudaMemcpyAsync(
+        this->device_ptrs[0], nchw.ptr<float>(), nchw.total() * nchw.elemSize(), cudaMemcpyHostToDevice, this->stream
+    ));
+
+    auto name = this->input_bindings[0].name.c_str();
+    this->context->setInputShape(name, nvinfer1::Dims{4, {1, 3, size.height, size.width}});
+    this->context->setTensorAddress(name, this->device_ptrs[0]);
+}
+
+void YOLOv8::copy_from_Mat(const cv::Mat& iamge, cv::Size& size) {
+    cv::Mat nchw;
+    this->letterbox(iamge, nchw, size);
+
+    CHECK(cudaMemcpyAsync(
+        this->device_ptrs[0], nchw.ptr<float>(), nchw.total() * nchw.elemSize(), cudaMemcpyHostToDevice, this->stream
+    ));
+
+    auto name = this->input_bindings[0].name.c_str();
+    this->context->setInputShape(name, nvinfer1::Dims{4, {1, 3, size.height, size.width}});
+    this->context->setTensorAddress(name, this->device_ptrs[0]);
 }
 
 /* 执行推理 */
 void YOLOv8::infer() {
+    // 填入 device_ptrs[1]
+    this->context->enqueueV3(this->stream);
 
+    for (int i = 0; i < this->num_outputs; ++i) {
+        size_t osize = this->output_bindings[i].size * this->output_bindings[i].dsize;
+        CHECK(cudaMemcpyAsync(
+            this->host_ptrs[i], this->device_ptrs[i + this->num_inputs], osize, cudaMemcpyDeviceToHost, this->stream
+        ));
+    }
+    cudaStreamSynchronize(this->stream);
 }
 
 /* 后处理输出结果 */
 void YOLOv8::postprocess(std::vector<Object>& objs) {
+    objs.clear();
+    // NMS插件的输出，原本是[1, 84, 8400]
+    int*  num_dets = static_cast<int*>(this->host_ptrs[0]);
+    auto* boxes    = static_cast<float*>(this->host_ptrs[1]);
+    auto* scores   = static_cast<float*>(this->host_ptrs[2]);
+    int*  labels   = static_cast<int*>(this->host_ptrs[3]);
+    auto& dw       = this->pparam.dw;
+    auto& dh       = this->pparam.dh;
+    auto& width    = this->pparam.width;
+    auto& height   = this->pparam.height;
+    auto& ratio    = this->pparam.ratio;
+    for (int i = 0; i < num_dets[0]; ++i) {
+        float *ptr = boxes + i * 4;
+        
+        float x0 = *ptr++ - dw;
+        float y0 = *ptr++ - dh;
+        float x1 = *ptr++ - dw;
+        float y1 = *ptr - dh;
 
+        x0 = clamp(x0 * ratio, 0.f, width);
+        y0 = clamp(y0 * ratio, 0.f, height);
+        x1 = clamp(x1 * ratio, 0.f, width);
+        y1 = clamp(y1 * ratio, 0.f, height);
+        Object obj;
+        obj.rect.x          = x0;
+        obj.rect.y          = y0;
+        obj.rect.width      = x1 - x0;
+        obj.rect.height     = y1 - y0;
+        obj.prob            = *(scores + i);
+        obj.label           = *(labels + i);
+        objs.push_back(obj);
+    }
 }
 
 /* 可视化 */
@@ -163,7 +306,28 @@ void YOLOv8::draw_objects(const cv::Mat&                                image,
                           const std::vector<std::string>&               CLASS_NAMES,
                           const std::vector<std::vector<unsigned int>>& COLORS)
 {
+    res = image.clone();
+    for (auto& obj : objs) {
+        cv::Scalar color = cv::Scalar(COLORS[obj.label][0], COLORS[obj.label][1], COLORS[obj.label][2]);
+        cv::rectangle(res, obj.rect, color, 2);
 
+        char text[256];
+        sprintf(text, "%s %.1f%%", CLASS_NAMES[obj.label].c_str(), obj.prob * 100);
+
+        int      baseLine    = 0;
+        cv::Size label_size  = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.4, 1, &baseLine);
+
+        int x = (int)obj.rect.x;
+        int y = (int)obj.rect.y + 1;
+
+        if (y > res.rows) {
+            y = res.rows;
+        }
+
+        cv::rectangle(res, cv::Rect(x, y, label_size.width, label_size.height + baseLine), {0, 0, 255}, -1);
+
+        cv::putText(res, text, cv::Point(x, y + label_size.height), cv::FONT_HERSHEY_SIMPLEX, 0.4, {255, 255, 255}, 1);
+    }
 }
 
 #endif
