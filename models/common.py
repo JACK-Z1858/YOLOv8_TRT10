@@ -24,7 +24,7 @@ def make_anchors(feats: Tensor,
         # 生成网格坐标矩阵，sx 和 sy 的形状为 (h, w)，每个元素表示对应位置的坐标
         sy, sx = torch.meshgrid(sy, sx)
         # 将两个(h, w)堆叠成一个(h, w, 2)的张量，并调整形状为(h*w, 2)，表示所有锚点的坐标
-        anchor_points.append(torch.stack((sx, sy), dim=-1).view(-1, 2))
+        anchor_points.append(torch.stack((sx, sy), -1).view(-1, 2))
         # 创建一个形状为(h*w, 1)的张量，填充为当前步长值，并添加到步长列表中
         stride_tensor.append(torch.full((h * w, 1), stride, dtype=dtype, device=device))
         # 最后将所有特征图的锚点和步长张量拼接成一个大的张量，并返回
@@ -90,8 +90,8 @@ class C2f_TRT(nn.Module):
     
     def forward(self, x):
         x = self.cv1(x)
-        x = [x, x[:self.c:, ...]]
-        x.extend(self.m(x) for m in self.m)
+        x = [x, x[:, self.c:, ...]]
+        x.extend(m(x[-1]) for m in self.m)
         x.pop(1)
         return self.cv2(torch.cat(x, dim=1)) 
 
@@ -141,22 +141,51 @@ class PostDetect(nn.Module):
         
     
 class PostSeg(nn.Module):
-    def __init__(self, num_classes: int):
-        super(PostSeg, self).__init__()
-        
-        self.num_classes = num_classes
+    export = True
+    shape = None
+    dynamic = False
     
-    def forward(self, feats: Tensor) -> Tensor:
-        # Placeholder for the actual post-processing implementation for segmentation
-        pass
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        
+    def forward(self, x):
+        p = self.proto(x[0])  # mask protos
+        bs = p.shape[0]  # batch size
+        mc = torch.cat(
+            [self.cv4[i](x[i]).view(bs, self.nm, -1) for i in range(self.nl)],
+            2)  # mask coefficients
+        boxes, scores, labels = self.forward_det(x)
+        out = torch.cat([boxes, scores, labels.float(), mc.transpose(1, 2)], 2)
+        return out, p.flatten(2)
+    
+    def forward_det(self, x):
+        shape = x[0].shape
+        b, res, b_reg_num = shape[0], [], self.reg_max * 4
+        for i in range(self.nl):
+            res.append(torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1))
+        if self.dynamic or self.shape != shape:
+            self.anchors, self.strides = \
+                (x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5))
+            self.shape = shape
+        x = [i.view(b, self.no, -1) for i in res]
+        y = torch.cat(x, 2)
+        boxes, scores = y[:, :b_reg_num, ...], y[:, b_reg_num:, ...].sigmoid()
+        boxes = boxes.view(b, 4, self.reg_max, -1).permute(0, 1, 3, 2)
+        boxes = boxes.softmax(-1) @ torch.arange(self.reg_max).to(boxes)
+        boxes0, boxes1 = -boxes[:, :2, ...], boxes[:, 2:, ...]
+        boxes = self.anchors.repeat(b, 2, 1) + torch.cat([boxes0, boxes1], 1)
+        boxes = boxes * self.strides
+        scores, labels = scores.transpose(1, 2).max(dim=-1, keepdim=True)
+        return boxes.transpose(1, 2), scores, labels
 
 # 替换模型的类为优化后的类，以便在推理过程中使用更高效的实现
 # 修改__class__属性不会重新初始化对象，因此原有的属性和方法仍然保留，但新的类可以覆盖或添加新的方法来实现优化后的功能   
-def optim(model: nn.Module) -> nn.Module:
-    s = str(type(model)[6:-2].split('.')[-1])
+def optim(module: nn.Module) -> nn.Module:
+    #s = str(type(module))[6:-2].split('.')[-1]
+    s = module.__class__.__name__
     if s == 'Detect':
-        setattr(model, '__class__', PostDetect)
+        setattr(module, '__class__', PostDetect)
     elif s == 'Segment':
-        setattr(model, '__class__', PostSeg)
+        setattr(module, '__class__', PostSeg)
     elif s == 'C2f':
-        setattr(model, '__class__', C2f_TRT)
+        setattr(module, '__class__', C2f_TRT)

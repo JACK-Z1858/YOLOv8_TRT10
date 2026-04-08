@@ -5,7 +5,7 @@
 #ifndef YOLOV8_HPP
 #define YOLOV8_HPP
 #include "NvInferPlugin.h"
-#include "include/common.hpp"
+#include "common.hpp"
 #include <fstream>
 using namespace det;
 

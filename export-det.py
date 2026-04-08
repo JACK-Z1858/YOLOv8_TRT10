@@ -46,7 +46,7 @@ def parse_args():
                         type=int,
                         default=[1, 3, 640, 640],
                         help='Model input shape only for api builder')
-    parser.add_argument('device',
+    parser.add_argument('--device',
                         type=str,
                         default='cpu',
                         help='Export ONNX device')   
