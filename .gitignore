@@ -1,4 +1,5 @@
 .vscode/
+
 build/
 *.pt
 *.onnx
@@ -6,3 +7,6 @@ build/
 data/
 outputs/
 runs/
+
+__pycache__/
+*.py[cod]
