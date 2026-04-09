@@ -140,7 +140,8 @@ void YOLOv8::make_pipe(bool warmup) {
         this->context->setTensorAddress(name, d_ptr);
     }
 
-    for (auto& bindings : output_bindings) {
+    for (auto& bindings : this->output_bindings) {
+
         void *d_ptr, *h_ptr;
         size_t size = bindings.size * bindings.dsize;
         CHECK(cudaMallocAsync(&d_ptr, size, this->stream));
@@ -210,9 +211,6 @@ void YOLOv8::letterbox(const cv::Mat& image, cv::Mat& out, cv::Size& size) {
     channels[0].convertTo(c2, CV_32F, 1 / 255.f);
     channels[1].convertTo(c1, CV_32F, 1 / 255.f);
     channels[2].convertTo(c0, CV_32F, 1 / 255.f);
-
-    printf("padw=%d padh=%d | dw=%.4f dh=%.4f | left=%d top=%d | ratio=%.6f\n",
-       padw, padh, dw, dh, left, top, 1/r);
     
     this->pparam.ratio  = 1 / r;
     this->pparam.dw     = dw;
@@ -268,6 +266,7 @@ void YOLOv8::infer() {
 /* 后处理输出结果 */
 void YOLOv8::postprocess(std::vector<Object>& objs) {
     objs.clear();
+
     // NMS插件的输出，原本是[1, 84, 8400]
     int*  num_dets = static_cast<int*>(this->host_ptrs[0]);
     auto* boxes    = static_cast<float*>(this->host_ptrs[1]);
@@ -280,7 +279,7 @@ void YOLOv8::postprocess(std::vector<Object>& objs) {
     auto& ratio    = this->pparam.ratio;
 
     for (int i = 0; i < num_dets[0]; ++i) {
-        float *ptr = boxes + i * 4;
+        float* ptr = boxes + i * 4;
         
         //printf("raw box[%d]: %.4f %.4f %.4f %.4f\n",
         //   i, ptr[0], ptr[1], ptr[2], ptr[3]);

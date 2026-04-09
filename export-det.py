@@ -64,10 +64,10 @@ def main(args):
     model = YOLOv8.model.fuse().eval()
     for m in model.modules():
         optim(m)
-        m.to(device=args.device)
-    model.to(device=args.device)
+        m.to(args.device)
+    model.to(args.device)
     # 预热模型，运行两次前向传播以确保模型已经加载到设备上并且所有的权重都已经准备好
-    fake_input = torch.randn(args.input_shape).to(device=args.device)
+    fake_input = torch.randn(args.input_shape).to(args.device)
     for _ in range(2):
         model(fake_input)
     save_path = args.weights.replace('.pt', '.onnx')
@@ -78,7 +78,9 @@ def main(args):
             f,
             opset_version=args.opset,
             input_names=['images'],
-            output_names=['num_dets', 'boxes', 'scores', 'labels'],)
+            output_names=['num_dets', 'boxes', 'scores', 'labels'],
+            dynamo=False
+        )
         f.seek(0)
         onnx_model = onnx.load(f)
     onnx.checker.check_model(onnx_model)

@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
             auto tc = (double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.;
             printf("cost %2.4lf ms\n", tc);
             cv::imshow("result", res);
-            if (cv::waitKey(10) == 'q') {
+            if (cv::waitKey(33) == 'q') {
                 break;
             }
         }

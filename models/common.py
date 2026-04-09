@@ -26,7 +26,8 @@ def make_anchors(feats: Tensor,
         # 将两个(h, w)堆叠成一个(h, w, 2)的张量，并调整形状为(h*w, 2)，表示所有锚点的坐标
         anchor_points.append(torch.stack((sx, sy), -1).view(-1, 2))
         # 创建一个形状为(h*w, 1)的张量，填充为当前步长值，并添加到步长列表中
-        stride_tensor.append(torch.full((h * w, 1), stride, dtype=dtype, device=device))
+        stride_tensor.append(
+            torch.full((h * w, 1), stride, dtype=dtype, device=device))
         # 最后将所有特征图的锚点和步长张量拼接成一个大的张量，并返回
     return torch.cat(anchor_points), torch.cat(stride_tensor)
 
@@ -67,9 +68,8 @@ class TRT_NMS(torch.autograd.Function):
             background_class: int = -1,
             box_coding: int = 0,
             score_activation: int = 0,
-            plugin_version: str = '1'
-        ) -> Tuple[Value, Value, Value, Value]:
-        out = g.op('TRT::EfficientNM_TRT',
+            plugin_version: str = '1') -> Tuple[Value, Value, Value, Value]:
+        out = g.op('TRT::EfficientNMS_TRT',
                    boxes, 
                    scores,
                    iou_threshold_f=iou_threshold,
@@ -80,11 +80,11 @@ class TRT_NMS(torch.autograd.Function):
                    plugin_version_s=plugin_version,
                    score_activation_i=score_activation,
                    outputs=4)
-        num_dets, boxes, scores, classes = out
-        return num_dets, boxes, scores, classes
+        nums_dets, boxes, scores, classes = out
+        return nums_dets, boxes, scores, classes
 
 # 定义一个新的类 C2f_TRT，继承自 nn.Module，用于实现优化后的 C2f 模块   
-class C2f_TRT(nn.Module):
+class C2f(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
     
@@ -117,23 +117,23 @@ class PostDetect(nn.Module):
             # cv2:边界框回归，cv3:类别预测，拼接后得到一个(batch, b_reg_num + num_classes, h, w)的张量
             # dims=1表示在特征维度上进行拼接，得到的结果是每个anchor对应一个包含回归和分类信息的向量
             # [batch, b_reg_num = 64, h, w] + [batch, num_classes = 80, h, w] -> [batch, 64 + 80, h, w]
-            res.append(torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), dim=1))
+            res.append(torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1))
         if self.dynamic or self.shape != shape:
             self.anchors, self.strides = (x.transpose(
                 0, 1) for x in make_anchors(x, self.stride, 0.5))
             self.shape = shape
         # 将每个特征图的结果调整形状为 (batch, b_reg_num + num_classes, num_anchors(h * w))，然后在第2个(0, 1, 2)维度上拼接
         x = [i.view(b, self.no, -1) for i in res]
-        y = torch.cat(x, dim=2)
+        y = torch.cat(x, 2)
         # 将回归信息和分类信息分开，回归信息的形状为 (batch, b_reg_num, num_anchors)，分类信息经过形状为 (batch, num_classes, num_anchors)
         boxes, scores = y[:, :b_reg_num, ...], y[:, b_reg_num:, ...].sigmoid()
         # (b, 64, 8400) -> (b, 4, 16, 8400) -> (b, 4, 8400, 16)
         boxes = boxes.view(b, 4, self.reg_max, -1).permute(0, 1, 3, 2)
         # [1, 4, 8400, 16] @ [16] -> [1, 4, 8400]，通过softmax将离散化的回归值转换为连续的坐标值，得到每个边界框的坐标信息
-        boxes = boxes.softmax(dim=-1) @ torch.arange(self.reg_max).to(boxes)
+        boxes = boxes.softmax(-1) @ torch.arange(self.reg_max).to(boxes)
         # dim[1] = [l, t, r, b]，分别表示边界框的左、上、右、下坐标值
         boxes0, boxes1 = -boxes[:, :2, ...], boxes[:, 2:, ...]
-        boxes = self.anchors.repeat(b, 2, 1) + torch.cat([boxes0, boxes1], dim=1)
+        boxes = self.anchors.repeat(b, 2, 1) + torch.cat([boxes0, boxes1], 1)
         boxes = boxes * self.strides
         
         return TRT_NMS.apply(boxes.transpose(1, 2), scores.transpose(1, 2), 
@@ -188,4 +188,4 @@ def optim(module: nn.Module) -> nn.Module:
     elif s == 'Segment':
         setattr(module, '__class__', PostSeg)
     elif s == 'C2f':
-        setattr(module, '__class__', C2f_TRT)
+        setattr(module, '__class__', C2f)
