@@ -150,20 +150,19 @@ void YOLOv8::make_pipe(bool warmup) {
 
         auto name = bindings.name.c_str();
         this->context->setTensorAddress(name, d_ptr);
-
-        if (warmup) {
-            for (int i = 0; i < 10; ++i) {
-                for (auto& bindings : this->input_bindings) {
-                    size_t size = bindings.size * bindings.dsize;
-                    void *h_ptr = malloc(size);
-                    memset(h_ptr, 0, size);
-                    CHECK(cudaMemcpyAsync(this->device_ptrs[0], h_ptr, size, cudaMemcpyHostToDevice, this->stream));
-                    free(h_ptr);
-                }
-                this->infer();
+    }
+    if (warmup) {
+        for (int i = 0; i < 10; ++i) {
+            for (auto& bindings : this->input_bindings) {
+                size_t size = bindings.size * bindings.dsize;
+                void *h_ptr = malloc(size);
+                memset(h_ptr, 0, size);
+                CHECK(cudaMemcpyAsync(this->device_ptrs[0], h_ptr, size, cudaMemcpyHostToDevice, this->stream));
+                free(h_ptr);
             }
-            printf("model warmup 10 times\n");
+            this->infer();
         }
+        printf("model warmup 10 times\n");
     }
 }
 
@@ -212,6 +211,9 @@ void YOLOv8::letterbox(const cv::Mat& image, cv::Mat& out, cv::Size& size) {
     channels[1].convertTo(c1, CV_32F, 1 / 255.f);
     channels[2].convertTo(c0, CV_32F, 1 / 255.f);
 
+    printf("padw=%d padh=%d | dw=%.4f dh=%.4f | left=%d top=%d | ratio=%.6f\n",
+       padw, padh, dw, dh, left, top, 1/r);
+    
     this->pparam.ratio  = 1 / r;
     this->pparam.dw     = dw;
     this->pparam.dh     = dh;
@@ -276,18 +278,27 @@ void YOLOv8::postprocess(std::vector<Object>& objs) {
     auto& width    = this->pparam.width;
     auto& height   = this->pparam.height;
     auto& ratio    = this->pparam.ratio;
+
     for (int i = 0; i < num_dets[0]; ++i) {
         float *ptr = boxes + i * 4;
         
+        //printf("raw box[%d]: %.4f %.4f %.4f %.4f\n",
+        //   i, ptr[0], ptr[1], ptr[2], ptr[3]);
+
         float x0 = *ptr++ - dw;
         float y0 = *ptr++ - dh;
         float x1 = *ptr++ - dw;
         float y1 = *ptr - dh;
 
+        /*printf("box[%d]: %.4f %.4f %.4f %.4f | score: %.4f | label: %d\n",
+                    i, x0, y0, x1, y1,
+                    *(scores + i), *(labels + i));*/
+
         x0 = clamp(x0 * ratio, 0.f, width);
         y0 = clamp(y0 * ratio, 0.f, height);
         x1 = clamp(x1 * ratio, 0.f, width);
         y1 = clamp(y1 * ratio, 0.f, height);
+        
         Object obj;
         obj.rect.x          = x0;
         obj.rect.y          = y0;

@@ -42,15 +42,15 @@ class TRT_NMS(torch.autograd.Function):
             max_output_boxes: int = 100,        # 最大输出边界框数量，限制最终返回的边界框数量
             background_class: int = -1,         # 背景类别索引，如果设置为 -1 则不考虑背景类别
             box_coding: int = 0,                # 边界框编码方式，0 表示 (x1, y1, x2, y2)，1 表示 (cx, cy, w, h)
-            plugin_version: str = "1.0",        # 插件版本信息，可能用于选择不同版本的 NMS 实现
-            score_activation: int = 0,          # 分数激活函数类型，0 表示不使用激活函数，1 表示使用 sigmoid 激活函数
+            plugin_version: str = '1',          # 插件版本信息，可能用于选择不同版本的 NMS 实现
+            score_activation: int = 0           # 分数激活函数类型，0 表示不使用激活函数，1 表示使用 sigmoid 激活函数
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         batch_size, num_boxes, num_classes = scores.shape
         num_dets = torch.randint(0,
                                  max_output_boxes, (batch_size, 1),
                                  dtype=torch.int32)
-        boxes = torch.rand(batch_size, num_boxes, 4)
-        scores = torch.rand(batch_size, max_output_boxes)
+        boxes = torch.randn(batch_size, max_output_boxes, 4)
+        scores = torch.randn(batch_size, max_output_boxes)
         labels = torch.randint(0, 
                                num_classes, (batch_size, max_output_boxes), 
                                dtype=torch.int32)
@@ -61,14 +61,14 @@ class TRT_NMS(torch.autograd.Function):
             g,
             boxes: Value,
             scores: Value,
-            iou_threshold: float = 0.65,
+            iou_threshold: float = 0.45,
             score_threshold: float = 0.25,
             max_output_boxes: int = 100,
             background_class: int = -1,
             box_coding: int = 0,
-            plugin_version: str = "1.0",
             score_activation: int = 0,
-    ) -> Tuple[Value, Value, Value, Value]:
+            plugin_version: str = '1'
+        ) -> Tuple[Value, Value, Value, Value]:
         out = g.op('TRT::EfficientNM_TRT',
                    boxes, 
                    scores,
@@ -80,8 +80,8 @@ class TRT_NMS(torch.autograd.Function):
                    plugin_version_s=plugin_version,
                    score_activation_i=score_activation,
                    outputs=4)
-        num_dets, boxes, scores, labels = out
-        return num_dets, boxes, scores, labels
+        num_dets, boxes, scores, classes = out
+        return num_dets, boxes, scores, classes
 
 # 定义一个新的类 C2f_TRT，继承自 nn.Module，用于实现优化后的 C2f 模块   
 class C2f_TRT(nn.Module):
@@ -133,7 +133,7 @@ class PostDetect(nn.Module):
         boxes = boxes.softmax(dim=-1) @ torch.arange(self.reg_max).to(boxes)
         # dim[1] = [l, t, r, b]，分别表示边界框的左、上、右、下坐标值
         boxes0, boxes1 = -boxes[:, :2, ...], boxes[:, 2:, ...]
-        boxes = self.anchors.repeat(b, 2, 1) + torch.cat((boxes0, boxes1), dim=1)
+        boxes = self.anchors.repeat(b, 2, 1) + torch.cat([boxes0, boxes1], dim=1)
         boxes = boxes * self.strides
         
         return TRT_NMS.apply(boxes.transpose(1, 2), scores.transpose(1, 2), 
@@ -181,8 +181,8 @@ class PostSeg(nn.Module):
 # 替换模型的类为优化后的类，以便在推理过程中使用更高效的实现
 # 修改__class__属性不会重新初始化对象，因此原有的属性和方法仍然保留，但新的类可以覆盖或添加新的方法来实现优化后的功能   
 def optim(module: nn.Module) -> nn.Module:
-    #s = str(type(module))[6:-2].split('.')[-1]
-    s = module.__class__.__name__
+    s = str(type(module))[6:-2].split('.')[-1]
+    #s = module.__class__.__name__
     if s == 'Detect':
         setattr(module, '__class__', PostDetect)
     elif s == 'Segment':
