@@ -18,10 +18,10 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(Function)
 
 # CUDA
-find_package(CUDA REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 print_var(CUDA_LIBRARIES)
 print_var(CUDA_INCLUDE_DIRS)
-get_filename_component(CUDA_LIB_DIR ${CUDA_LIBRARIES} DIRECTORY)
+get_filename_component(CUDA_LIB_DIR ${CUDAToolkit_LIBRARY_DIR} DIRECTORY)
 print_var(CUDA_LIB_DIR)
 
 # OpenCV
