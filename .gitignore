@@ -1,6 +1,7 @@
 .vscode/
 
 build/
+yolov8_trt10
 *.pt
 *.engine
 data/
