@@ -1,9 +1,12 @@
 .vscode/
+*.code-workspace
 
 build/
 yolov8_trt10
+yolov8_cpu
 *.pt
 *.engine
+*.onnx
 data/
 outputs/
 runs/

@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.12)
 set(CMAKE_CUDA_ARCHITECTURES native)
 # set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc)
 
-project(yolov8_trt10 LANGUAGES CXX CUDA)
+project(yolov8_cpu LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -65,8 +65,7 @@ print_var(ALL_LIB_DIRS)
 add_executable(
     ${PROJECT_NAME}
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/yolov8.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/common.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/yolov8.hpp   
 )
 
 target_include_directories(

@@ -10,7 +10,7 @@
 //CUDA错误检查宏
 #define CHECK(call)                                                                 \
     do {                                                                            \
-        const cudaError_t error_code = call;                                         \
+        const cudaError_t error_code = call;                                        \
         if (error_code != cudaSuccess) {                                            \
             printf("CUDA ERROR:\n");                                                \
             printf("    File:   %s\n", __FILE__);                                   \
