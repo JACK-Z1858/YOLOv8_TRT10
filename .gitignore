@@ -4,6 +4,7 @@
 build/
 yolov8_trt10
 yolov8_cpu
+multithreadingTest
 *.pt
 *.engine
 *.onnx

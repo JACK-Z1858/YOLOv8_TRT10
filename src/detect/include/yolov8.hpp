@@ -17,7 +17,7 @@ public:
     void        postprocess(std::vector<det::Object>& objs);
     static void draw_objects(const cv::Mat&                                image,
                              cv::Mat&                                      res,
-                             const std::vector<det::Object>&                    objs,
+                             const std::vector<det::Object>&               objs,
                              const std::vector<std::string>&               CLASS_NAMES,
                              const std::vector<std::vector<unsigned int>>& COLORS);
     int                  num_bindings;

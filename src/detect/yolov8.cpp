@@ -2,6 +2,7 @@
 #include "yolov8.hpp"
 #include "NvInferPlugin.h"
 #include "opencv2/imgproc.hpp"
+#include <NvInferRuntime.h>
 #include <fstream>
 // 类外定义构造函数
 YOLOv8::YOLOv8(const std::string& engine_file_path) {
