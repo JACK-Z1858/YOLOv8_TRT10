@@ -1,10 +1,14 @@
 #pragma once
 
 #include "NvInfer.h"
+#include <NvInferRuntime.h>
 #include <NvInferRuntimeBase.h>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <memory>
+#include <opencv2/core/cuda.hpp>
 #include <string>
 #include <vector>
 #include "opencv2/core.hpp"
@@ -33,8 +37,8 @@ struct profilingData {
 };
 
 struct Binding {
-    uint32_t        size{1};
-    uint32_t        dsize{1};
+    size_t        size{1};
+    size_t        dsize{1};
     nvinfer1::Dims  dims;
     std::string     name;
 };
@@ -56,8 +60,8 @@ inline uint32_t type2dsize(const nvinfer1::DataType& dataType) {
     }   
 }
 
-inline uint32_t dims2size(const nvinfer1::Dims &dims) {
-    uint32_t size = 1;
+inline size_t dims2size(const nvinfer1::Dims &dims) {
+    size_t size = 1;
     for (int i = 0; i < dims.nbDims; ++i) {
         size *= dims.d[i];
     }
@@ -76,10 +80,40 @@ struct Object {
 
 struct FrameData {
     uint32_t              frame_id{};
+    std::vector<void*>    obj_ptr{};
     cv::Mat               img;
     std::vector<Object>   objects;
     std::chrono::steady_clock::time_point t_enqueue{}; 
     profilingData         prof;
+};
+
+struct WorkContext {
+    std::unique_ptr<nvinfer1::IExecutionContext> context;
+    cudaStream_t                stream{nullptr};
+    cv::cuda::Stream            cv_stream;
+    std::vector<void*>          host_ptrs;
+    std::vector<void*>          device_ptrs;
+    std::vector<size_t>         o_sizes;
+
+    WorkContext(const WorkContext&) = delete;
+    WorkContext& operator=(const WorkContext&) = delete;
+
+    WorkContext(WorkContext&&) noexcept = default;
+    WorkContext& operator=(WorkContext&&) noexcept = default;
+
+    WorkContext() = default;
+
+    ~WorkContext() {
+        cudaStreamDestroy(stream);
+
+        for (auto& ptr : host_ptrs) {
+            cudaFreeHost(ptr);
+        }
+
+        for (auto& ptr : device_ptrs) {
+            cudaFree(ptr);
+        }
+    }
 };
 
 class Logger: public nvinfer1::ILogger {

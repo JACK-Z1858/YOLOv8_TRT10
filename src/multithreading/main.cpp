@@ -5,6 +5,7 @@
 #include <ostream>
 #include <ratio>
 #include <thread>
+#include <vector>
 
 int main(int argc, char *argv[]) {
     double t_read_sum{0.0};
@@ -18,15 +19,21 @@ int main(int argc, char *argv[]) {
 
     const std::string enginePath{argv[1]};
     const std::string videoPath{argv[2]};
+    uint32_t nbWorkers = 1;
     YOLOv8 yolo(enginePath);
-    yolo.makepipe();
+    // yolo.makepipe();
 
     threadSafeQueue read2work("read2work",2);
     threadSafeQueue work2out("work2out",2);
     threadSafeQueue out2show("out2show", 2);
 
     std::thread reader(&YOLOv8::VideoReader, &yolo, videoPath, std::ref(read2work));
-    std::thread worker(&YOLOv8::Worker, &yolo, std::ref(read2work), std::ref(work2out));
+    std::vector<std::thread> workers;
+    workers.reserve(nbWorkers);
+    for (int i = 0; i < nbWorkers; ++i) {
+        workers.emplace_back(std::thread(&YOLOv8::runWorker, &yolo, std::ref(read2work), std::ref(work2out)));
+    }
+    
     std::thread outer(&YOLOv8::Outputer, &yolo, std::ref(work2out), std::ref(out2show));
 
     FrameData res;
@@ -60,9 +67,12 @@ int main(int argc, char *argv[]) {
     cv::destroyAllWindows();
     cv::waitKey(1);
     reader.join();
-    worker.join();
+    for (int i = 0; i < nbWorkers; ++i) {
+        workers[i].join();
+    }
+    
     outer.join();
-    std::cout << "Measure Count: " << measureCount << "ms" << std::endl
+    std::cout << "Measure Count: " << measureCount << std::endl
               << "Avg read time: " << t_read_sum / measureCount << "ms" << std::endl
               << "Avg PreProcess time: " << t_pre_sum / measureCount << "ms" << std::endl
               << "Avg Inference time: " << t_infer_sum / measureCount << "ms" << std::endl
