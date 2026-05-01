@@ -20,13 +20,13 @@ public:
                              const std::vector<det::Object>&               objs,
                              const std::vector<std::string>&               CLASS_NAMES,
                              const std::vector<std::vector<unsigned int>>& COLORS);
-    int                  num_bindings;
-    int                  num_inputs  = 0;       // 输入 tensor 信息
-    int                  num_outputs = 0;       // 输出 tensor 信息
+    int                       num_bindings;
+    int                       num_inputs  = 0;       // 输入 tensor 信息
+    int                       num_outputs = 0;       // 输出 tensor 信息
     std::vector<det::Binding> input_bindings;        
     std::vector<det::Binding> output_bindings;       
-    std::vector<void*>   host_ptrs;             // CPU 内存指针
-    std::vector<void*>   device_ptrs;           // GPU 内存指针
+    std::vector<void*>        host_ptrs;             // CPU 内存指针
+    std::vector<void*>        device_ptrs;           // GPU 内存指针
 
     det::PreParam pparam;
 

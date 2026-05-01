@@ -34,7 +34,7 @@ YOLOv8::YOLOv8(const std::string& engine_file_path) {
     this->num_bindings = this->engine->getNbIOTensors();
 
     for (int i = 0; i < this->num_bindings; ++i) {
-        det::Binding         binding;
+        det::Binding    binding;
         nvinfer1::Dims  dims;
 
         // TRT_10
@@ -273,7 +273,7 @@ void YOLOv8::postprocess(std::vector<det::Object>& objs) {
 /* 可视化 */
 void YOLOv8::draw_objects(const cv::Mat&                                image,
                           cv::Mat&                                      res,
-                          const std::vector<det::Object>&                    objs,
+                          const std::vector<det::Object>&               objs,
                           const std::vector<std::string>&               CLASS_NAMES,
                           const std::vector<std::vector<unsigned int>>& COLORS)
 {

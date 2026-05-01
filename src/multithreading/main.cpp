@@ -1,36 +1,74 @@
 #include "include/thread/thread.hpp"
 #include "include/yolov8.hpp"
+#include <chrono>
 #include <opencv2/highgui.hpp>
-#include <string>
+#include <ostream>
+#include <ratio>
 #include <thread>
 
 int main(int argc, char *argv[]) {
-    YOLOv8 yolo;
+    double t_read_sum{0.0};
+    double t_pre_sum{0.0};
+    double t_infer_sum{0.0};
+    double t_post_sum{0.0};
+    double t_draw_sum{0.0};
+    double t_e2e_sum{0.0};
+    uint32_t measureCount{0};
+    std::chrono::steady_clock::time_point start, end;
 
-    const std::string videoPath{argv[1]};
+    const std::string enginePath{argv[1]};
+    const std::string videoPath{argv[2]};
+    YOLOv8 yolo(enginePath);
+    yolo.makepipe();
 
-    threadSafeQueue read2work("read2work");
-    threadSafeQueue work2out("work2out");
-    threadSafeQueue out2show("out2show");
+    threadSafeQueue read2work("read2work",2);
+    threadSafeQueue work2out("work2out",2);
+    threadSafeQueue out2show("out2show", 2);
 
     std::thread reader(&YOLOv8::VideoReader, &yolo, videoPath, std::ref(read2work));
     std::thread worker(&YOLOv8::Worker, &yolo, std::ref(read2work), std::ref(work2out));
     std::thread outer(&YOLOv8::Outputer, &yolo, std::ref(work2out), std::ref(out2show));
 
     FrameData res;
-    cv::resizeWindow("result", 1280, 720);
     while (out2show.pull(res)) {
+        if (res.frame_id == 300) {
+                start = std::chrono::steady_clock::now();
+            }
+        if (res.frame_id >= 300 && res.frame_id <= 1000) {
+            
+            auto final = std::chrono::steady_clock::now();
+            res.prof.t_e2e = std::chrono::duration<double, std::milli>(final - res.t_enqueue).count();
+            measureCount += 1;
+            t_read_sum += res.prof.t_read;
+            t_pre_sum += res.prof.t_pre;
+            t_infer_sum += res.prof.t_infer;
+            t_post_sum += res.prof.t_post;
+            t_draw_sum += res.prof.t_draw;
+            t_e2e_sum += res.prof.t_e2e;
+            
+        }
         cv::imshow("result", res.img);
-        if (cv::waitKey(33) == 'q') {
+        if (cv::waitKey(1) == 'q' || res.frame_id == 1000) {
+            end = std::chrono::steady_clock::now();
             read2work.shutdown();
             work2out.shutdown();
             out2show.shutdown();
             break;
         }
     }
+    auto tc = std::chrono::duration<double, std::milli>(end - start).count();
     cv::destroyAllWindows();
+    cv::waitKey(1);
     reader.join();
     worker.join();
     outer.join();
+    std::cout << "Measure Count: " << measureCount << "ms" << std::endl
+              << "Avg read time: " << t_read_sum / measureCount << "ms" << std::endl
+              << "Avg PreProcess time: " << t_pre_sum / measureCount << "ms" << std::endl
+              << "Avg Inference time: " << t_infer_sum / measureCount << "ms" << std::endl
+              << "Avg PostProcess time: " << t_post_sum / measureCount << "ms" << std::endl
+              << "Avg Draw time: " << t_draw_sum / measureCount << "ms" << std::endl
+              << "Avg End2End time: " << t_e2e_sum / measureCount << "ms" << std::endl
+              << "Total time cost: " << tc << "ms" << std::endl;
     return 0;
 }

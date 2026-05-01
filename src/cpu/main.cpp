@@ -40,6 +40,14 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Usage: %s [onnx_path] [image_path]\n", argv[0]);
         return -1;
     }
+    
+    int frameCount = 0;
+    int measureCount = 0;
+    int measureBeg = 300;
+    int measureEnd = 1000;
+    std::chrono::steady_clock::time_point TTstart;
+    std::chrono::steady_clock::time_point TTend;
+
     std::cout << "OpenCV version: " << CV_VERSION << std::endl;
     const std::string onnx_path{argv[1]};
     const std::string image_path{argv[2]};

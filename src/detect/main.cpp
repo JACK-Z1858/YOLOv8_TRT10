@@ -9,6 +9,8 @@
 #include <opencv2/highgui.hpp>
 #include <filesystem>
 #include <chrono>
+#include <ostream>
+#include <ratio>
 
 namespace fs = std::filesystem;
 
@@ -20,6 +22,15 @@ int main(int argc, char** argv) {
         return -1;
     }
 
+    int frameCount = 0;
+    int measureCount = 0;
+    int measureBeg = 300;
+    int measureEnd = 1000;
+    std::chrono::steady_clock::time_point TTstart;
+    std::chrono::steady_clock::time_point TTend;
+    std::chrono::steady_clock::time_point processBeg;
+    std::chrono::steady_clock::time_point processEnd;
+    double processSum{0.0};
     // cuda:0
     cudaSetDevice(0);
     
@@ -62,18 +73,31 @@ int main(int argc, char** argv) {
             printf("can not open %s\n", path.c_str());
             return -1;
         }
-        while (cap.read(image)) {
+        
+        while (true) {
+            if (frameCount == measureBeg) TTstart = std::chrono::steady_clock::now();
+            processBeg = std::chrono::steady_clock::now();
+            if (!cap.read(image)) break;
+            frameCount++;
+        
             objs.clear();
             yolov8->copy_from_Mat(image, size);
-            auto start = std::chrono::system_clock::now();
+            // auto start = std::chrono::system_clock::now();
             yolov8->infer();
-            auto end = std::chrono::system_clock::now();
+            // auto end = std::chrono::system_clock::now();
             yolov8->postprocess(objs);
             yolov8->draw_objects(image, res, objs, CLASS_NAMES, COLORS);
-            auto tc = (double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.;
-            printf("cost %2.4lf ms\n", tc);
+            processEnd = std::chrono::steady_clock::now();
+
+            if (frameCount >= measureBeg && frameCount <= measureEnd) {
+                processSum += std::chrono::duration<double, std::milli>(processEnd - processBeg).count();
+                ++measureCount;
+            }
+            // auto tc = (double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.;
+            // printf("cost %2.4lf ms\n", tc);
             cv::imshow("result", res);
-            if (cv::waitKey(33) == 'q') {
+            if (cv::waitKey(1) == 'q' || frameCount == measureEnd) {
+                TTend = std::chrono::steady_clock::now();
                 break;
             }
         }
@@ -94,6 +118,9 @@ int main(int argc, char** argv) {
             cv::waitKey(0);
         }
     }
+    auto TTtc = std::chrono::duration<double, std::milli>(TTend - TTstart).count();
+    std::cout << "Measure count: " << measureCount << ": Total time cost: " << TTtc << "ms" <<std::endl
+              << "Avg process: " << processSum / measureCount << "ms" << std::endl;
     cv::destroyAllWindows();
     return 0;
 }
