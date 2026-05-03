@@ -1,13 +1,19 @@
 #include "include/thread/thread.hpp"
 #include "include/yolov8.hpp"
 #include <chrono>
+#include <cstdint>
 #include <opencv2/highgui.hpp>
 #include <ostream>
 #include <ratio>
+#include <string>
 #include <thread>
 #include <vector>
 
 int main(int argc, char *argv[]) {
+    if (argc != 4) {
+        std::cerr << "Usage: " << argv[0] << " [engine_path] [data_path] [number of workers]" << std::endl;
+        return -1;
+    }
     double t_read_sum{0.0};
     double t_pre_sum{0.0};
     double t_infer_sum{0.0};
@@ -19,7 +25,7 @@ int main(int argc, char *argv[]) {
 
     const std::string enginePath{argv[1]};
     const std::string videoPath{argv[2]};
-    uint32_t nbWorkers = 1;
+    uint32_t nbWorkers = static_cast<uint32_t>(std::stoul(argv[3]));
     YOLOv8 yolo(enginePath);
     // yolo.makepipe();
 
@@ -54,7 +60,8 @@ int main(int argc, char *argv[]) {
             t_e2e_sum += res.prof.t_e2e;
             
         }
-        cv::imshow("result", res.img);
+        //cv::imshow("result", res.img);
+        std::cout << "\rResult showed: "<< res.frame_id << std::flush;
         if (cv::waitKey(1) == 'q' || res.frame_id == 1000) {
             end = std::chrono::steady_clock::now();
             read2work.shutdown();
@@ -72,7 +79,8 @@ int main(int argc, char *argv[]) {
     }
     
     outer.join();
-    std::cout << "Measure Count: " << measureCount << std::endl
+    std::cout << std::endl
+              << "Measure Count: " << measureCount << std::endl
               << "Avg read time: " << t_read_sum / measureCount << "ms" << std::endl
               << "Avg PreProcess time: " << t_pre_sum / measureCount << "ms" << std::endl
               << "Avg Inference time: " << t_infer_sum / measureCount << "ms" << std::endl

@@ -4,9 +4,13 @@
 #include <NvInferRuntime.h>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <opencv2/core/cuda.hpp>
 #include <opencv2/core/cuda_stream_accessor.hpp>
+#include <opencv2/core/hal/interface.h>
+#include <opencv2/core/mat.hpp>
+#include <opencv2/core/types.hpp>
 #include <opencv2/cudaimgproc.hpp>
 #include <opencv2/cudawarping.hpp>
 #include <opencv2/imgproc.hpp>
@@ -15,6 +19,7 @@
 #include <ratio>
 #include <stdexcept>
 #include <fstream>
+#include <vector>
 
 YOLOv8::YOLOv8(const std::string& engine_path) {
     std::ifstream file(engine_path, std::ios::binary | std::ios::ate);
@@ -112,62 +117,89 @@ void YOLOv8::VideoReader(std::string inputVideo, threadSafeQueue& read2work) {
     }
 }
 
-WorkContext YOLOv8::initWorker() {
-    WorkContext wc;
-    wc.context.reset(engine_->createExecutionContext());
-    cudaStreamCreate(&wc.stream);
-    wc.cv_stream = cv::cuda::StreamAccessor::wrapStream(wc.stream);
+std::vector<WorkContext> YOLOv8::initWorkContext(uint32_t nbSlots) {
+    std::vector<WorkContext> slots;
+    cudaStream_t init_stream;
+    cudaStreamCreate(&init_stream);
 
-    for (auto& binding : i_bindings_) {
-        void* d_ptr;
-        CHECK(cudaMallocAsync(&d_ptr, binding.size * binding.dsize, wc.stream));
-        wc.device_ptrs.push_back(d_ptr);
-        auto name = binding.name.c_str();
-        wc.context->setInputShape(name, binding.dims);
-        wc.context->setTensorAddress(name, d_ptr);
+    for (int i = 0; i < nbSlots; ++i) {
+        WorkContext wc;
+        wc.context.reset(engine_->createExecutionContext());
+        
+        for (auto& binding : i_bindings_) {
+            void* d_ptr;
+            CHECK(cudaMallocAsync(&d_ptr, binding.size * binding.dsize, init_stream));
+            wc.device_ptrs.push_back(d_ptr);
+            auto name = binding.name.c_str();
+            wc.context->setInputShape(name, binding.dims);
+            wc.context->setTensorAddress(name, d_ptr);
+        }
+
+        for (auto& binding : o_bindings_) {
+            nvinfer1::Dims dims = wc.context->getTensorShape(binding.name.c_str());
+            size_t osize = dims2size(dims) * binding.dsize;
+            wc.o_sizes.push_back(osize);
+
+            void *d_ptr, *h_ptr;
+            CHECK(cudaMallocAsync(&d_ptr, osize, init_stream));
+            CHECK(cudaHostAlloc(&h_ptr, osize, 0));
+            wc.device_ptrs.push_back(d_ptr);
+            wc.host_ptrs.push_back(h_ptr);
+            auto name = binding.name.c_str();
+            wc.context->setTensorAddress(name, d_ptr);
+        }
+        slots.push_back(std::move(wc));
     }
-
-    for (auto& binding : o_bindings_) {
-        nvinfer1::Dims dims = wc.context->getTensorShape(binding.name.c_str());
-        size_t osize = dims2size(dims) * binding.dsize;
-        wc.o_sizes.push_back(osize);
-
-        void *d_ptr, *h_ptr;
-        CHECK(cudaMallocAsync(&d_ptr, osize, wc.stream));
-        CHECK(cudaHostAlloc(&h_ptr, osize, 0));
-        wc.device_ptrs.push_back(d_ptr);
-        wc.host_ptrs.push_back(h_ptr);
-        auto name = binding.name.c_str();
-        wc.context->setTensorAddress(name, d_ptr);
-    }
-    return wc;
+    cudaStreamSynchronize(init_stream);
+    cudaStreamDestroy(init_stream);
+    return slots;
 }
 
 void YOLOv8::runWorker(threadSafeQueue& read2work, threadSafeQueue& work2out) {
-    WorkContext wc = initWorker();
+    uint32_t nbSlots = 2;
+    std::vector<WorkContext> wc = initWorkContext(nbSlots);
+    
+    std::vector<cudaStream_t> stream_copy(nbSlots); 
+    std::vector<cudaStream_t> stream_infer(nbSlots);
+    
+    std::vector<cv::cuda::Stream> cv_copy(2);  
+    std::vector<cudaEvent_t> ev_prep(nbSlots);
+    std::vector<cudaEvent_t> ev_done(nbSlots);
+    for (int i = 0; i < nbSlots; ++i) {
+        cudaStreamCreate(&stream_copy[i]);
+        cudaStreamCreate(&stream_infer[i]);
+        cudaEventCreate(&ev_prep[i]);
+        cudaEventCreate(&ev_done[i]);
+        cv_copy[i] = cv::cuda::StreamAccessor::wrapStream(stream_copy[i]);
+    }
+
     FrameData frame;
+    while (read2work.pull(frame)) {
+        uint32_t slot = frame.frame_id % 2;
+        wc[slot].gpuMat.create(frame.img.rows, frame.img.cols, frame.img.type());   
+        wc[slot].gpuMat.upload(frame.img, cv_copy[slot]);
+        preProcess(wc[slot], cv_copy[slot]);
+        cudaEventRecord(ev_prep[slot], stream_copy[slot]);
 
-    while (read2work.pull(frame)) {   
-        cv::cuda::GpuMat gpuMat(frame.img);
-        preProcess(gpuMat, wc.cv_stream);
-
-        cv::cuda::GpuMat blob = blobFromGpuMat(gpuMat, wc.cv_stream);
-        size_t bytes = static_cast<size_t>(blob.rows) * blob.step;
-        CHECK(cudaMemcpyAsync(
-            wc.device_ptrs[0], blob.cudaPtr(), bytes, cudaMemcpyDeviceToDevice, wc.stream
-        ));
-
-        infer(wc);    // 推理失败则标记failed输出原图，保证每个id都会出现一次
-
+        cudaStreamWaitEvent(stream_infer[slot], ev_prep[slot]);
+        infer(wc[slot], stream_infer[slot]);    // 推理失败则标记failed输出原图，保证每个id都会出现一次
+        cudaEventRecord(ev_done[slot]);
+        // 如何保证数据从 host 拷贝出了
+        cudaEventSynchronize(ev_done[slot]);
         frame.obj_ptr.clear();
-        for (auto ptr : wc.host_ptrs) {
+        for (auto ptr : wc[slot].host_ptrs) {
             frame.obj_ptr.push_back(ptr);
         }
-        std::cout << frame.obj_ptr.size() << std::endl;
         postProcess(frame);
         if(!work2out.push(frame)) {
             break;
         }
+    }
+    for (int i = 0; i < nbSlots; ++i) {
+        cudaStreamDestroy(stream_copy[i]);
+        cudaStreamDestroy(stream_infer[i]);
+        cudaEventDestroy(ev_prep[i]);
+        cudaEventDestroy(ev_done[i]);
     }
     if (!work2out.isStopPush()) {
         work2out.stopPush();
@@ -222,65 +254,64 @@ bool YOLOv8::reorderSkipBuffer(const FrameData& frame, threadSafeQueue& out2show
     return true;
 }
 
-void YOLOv8::preProcess(cv::cuda::GpuMat& gpuMat, cv::cuda::Stream cvStream) {
+void YOLOv8::preProcess(WorkContext& wc, cv::cuda::Stream cv_copy) {
     const auto& dim = i_bindings_[0].dims;
     const float inp_h = dim.d[2];
     const float inp_w = dim.d[3];
-    height_  = gpuMat.rows;
-    width_   = gpuMat.cols;
+    height_  = wc.gpuMat.rows;
+    width_   = wc.gpuMat.cols;
     float r  = std::min(inp_h / height_, inp_w / width_);
     ratio_   = 1 / r;
     
-    cv::cuda::GpuMat resized = resizeKeepAspectRatioPadRightBottom(gpuMat, inp_h, inp_w, r, cvStream);
-    gpuMat = resized;
+    resizeKeepAspectRatioPadRightBottom(wc, inp_h, inp_w, r, cv_copy);
+    D2DBlobFromPadded(wc, cv_copy);
 }
 
-cv::cuda::GpuMat YOLOv8::resizeKeepAspectRatioPadRightBottom(cv::cuda::GpuMat& input, 
-                                                             const float       inp_h,
-                                                             const float       inp_W,
-                                                             const float       r,
-                                                             cv::cuda::Stream  cvStream) 
+void YOLOv8::resizeKeepAspectRatioPadRightBottom(WorkContext&     wc, 
+                                                 const float      inp_h,
+                                                 const float      inp_W,
+                                                 const float      r,
+                                                 cv::cuda::Stream cv_copy) 
 {
-    int unpad_h = r * input.rows;
-    int unpad_w = r * input.cols;
-    cv::cuda::GpuMat resized(unpad_h, unpad_w, CV_8UC3);
-    cv::cuda::resize(input, resized, resized.size(), 0, 0, cv::INTER_LINEAR, cvStream);
+    int unpad_h = r * height_;
+    int unpad_w = r * width_;
+    wc.resized.create(unpad_h, unpad_w, CV_8UC3);
+    cv::cuda::resize(wc.gpuMat, wc.resized, wc.resized.size(), 0, 0, cv::INTER_LINEAR, cv_copy);
 
-    cv::cuda::GpuMat pad((int)inp_h, (int)inp_W, CV_8UC3, cv::Scalar(114, 114, 114));
-    resized.copyTo(pad(cv::Rect(0, 0, unpad_w, unpad_h)), cvStream);
-    return pad;
+    wc.padded.create((int)inp_h, (int)inp_W, CV_8UC3);
+    wc.padded.setTo(cv::Scalar(114, 114, 114), cv::noArray(), cv_copy);
+    wc.resized.copyTo(wc.padded(cv::Rect(0, 0, unpad_w, unpad_h)), cv_copy);
 }
 
-cv::cuda::GpuMat YOLOv8::blobFromGpuMat(cv::cuda::GpuMat& input, cv::cuda::Stream cvStream) {
-    const int h = input.rows;
-    const int w = input.cols;
+void YOLOv8::D2DBlobFromPadded(WorkContext& wc, cv::cuda::Stream cv_copy) {
+    const int h = wc.padded.rows;
+    const int w = wc.padded.cols;
 
-    std::vector<cv::cuda::GpuMat> chw_u8(3);
-    cv::cuda::split(input, chw_u8, cvStream);
+    for (auto& channel : wc.chw_u8) {
+        channel.create(wc.padded.rows, wc.padded.cols, CV_8UC1);
+    }
+    cv::cuda::split(wc.padded, wc.chw_u8, cv_copy);
 
-    cv::cuda::GpuMat blob(1, 3 * h * w, CV_32F);
-    float* base = reinterpret_cast<float*>(blob.ptr<float>());
+    float* base = reinterpret_cast<float*>(wc.device_ptrs[0]);
     cv::cuda::GpuMat c0(h, w, CV_32F, base + 0 * h * w);
     cv::cuda::GpuMat c1(h, w, CV_32F, base + 1 * h * w);
     cv::cuda::GpuMat c2(h, w, CV_32F, base + 2 * h * w);
 
     // BGR -> RGB
-    chw_u8[2].convertTo(c0, CV_32F, 1.f / 255.f, cvStream);
-    chw_u8[1].convertTo(c1, CV_32F, 1.f / 255.f, cvStream);
-    chw_u8[0].convertTo(c2, CV_32F, 1.f / 255.f, cvStream);
-    return blob;
+    wc.chw_u8[2].convertTo(c0, CV_32F, 1.f / 255.f, cv_copy);
+    wc.chw_u8[1].convertTo(c1, CV_32F, 1.f / 255.f, cv_copy);
+    wc.chw_u8[0].convertTo(c2, CV_32F, 1.f / 255.f, cv_copy);
 }
 
-void YOLOv8::infer(const WorkContext& wc) {
-    wc.context->enqueueV3(wc.stream);
+void YOLOv8::infer(const WorkContext& wc, cudaStream_t stream_infer) {
+    wc.context->enqueueV3(stream_infer);
 
     for (int i = 0; i < num_outputs_; ++i) {
         size_t osize = wc.o_sizes[i];
         CHECK(cudaMemcpyAsync(
-            wc.host_ptrs[i], wc.device_ptrs[i + num_inputs_], osize, cudaMemcpyDeviceToHost, wc.stream
+            wc.host_ptrs[i], wc.device_ptrs[i + num_inputs_], osize, cudaMemcpyDeviceToHost, stream_infer
         ));
     }
-    cudaStreamSynchronize(wc.stream);
 }
 
 void YOLOv8::postProcess(FrameData& frame) {

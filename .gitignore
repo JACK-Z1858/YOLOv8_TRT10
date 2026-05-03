@@ -11,6 +11,7 @@ multithreadingTest
 data/
 outputs/
 runs/
+*.nsys-rep
 
 __pycache__/
 *.py[cod]

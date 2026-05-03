@@ -88,13 +88,18 @@ struct FrameData {
 };
 
 struct WorkContext {
+public:
     std::unique_ptr<nvinfer1::IExecutionContext> context;
-    cudaStream_t                stream{nullptr};
-    cv::cuda::Stream            cv_stream;
-    std::vector<void*>          host_ptrs;
-    std::vector<void*>          device_ptrs;
-    std::vector<size_t>         o_sizes;
+    std::vector<void*>                           host_ptrs;
+    std::vector<void*>                           device_ptrs;
+    std::vector<size_t>                          o_sizes;
 
+    cv::cuda::GpuMat              gpuMat;
+    cv::cuda::GpuMat              resized;
+    cv::cuda::GpuMat              padded;
+    std::vector<cv::cuda::GpuMat> chw_u8{3};
+    
+public:
     WorkContext(const WorkContext&) = delete;
     WorkContext& operator=(const WorkContext&) = delete;
 
@@ -104,7 +109,6 @@ struct WorkContext {
     WorkContext() = default;
 
     ~WorkContext() {
-        cudaStreamDestroy(stream);
 
         for (auto& ptr : host_ptrs) {
             cudaFreeHost(ptr);

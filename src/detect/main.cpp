@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
     cv::Size                 size = cv::Size{640, 640};
     std::vector<det::Object> objs;
 
-    cv::namedWindow("result", cv::WINDOW_AUTOSIZE);
+    // cv::namedWindow("result", cv::WINDOW_AUTOSIZE);
 
     if (isVideo) {
         cv::VideoCapture cap(path);
@@ -95,7 +95,8 @@ int main(int argc, char** argv) {
             }
             // auto tc = (double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.;
             // printf("cost %2.4lf ms\n", tc);
-            cv::imshow("result", res);
+            // cv::imshow("result", res);
+            std::cout << "\rResult showed: " << frameCount << std::flush;
             if (cv::waitKey(1) == 'q' || frameCount == measureEnd) {
                 TTend = std::chrono::steady_clock::now();
                 break;
@@ -119,7 +120,8 @@ int main(int argc, char** argv) {
         }
     }
     auto TTtc = std::chrono::duration<double, std::milli>(TTend - TTstart).count();
-    std::cout << "Measure count: " << measureCount << ": Total time cost: " << TTtc << "ms" <<std::endl
+    std::cout << std::endl
+              << "Measure count: " << measureCount << ": Total time cost: " << TTtc << "ms" <<std::endl
               << "Avg process: " << processSum / measureCount << "ms" << std::endl;
     cv::destroyAllWindows();
     return 0;

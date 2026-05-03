@@ -21,18 +21,18 @@ private:
     Logger  gLogger_;
 
 private:
-    void preProcess(cv::cuda::GpuMat &input, cv::cuda::Stream cvStream);
+    void preProcess(WorkContext& wc, cv::cuda::Stream cv_copy);
     void postProcess(FrameData& frame);
-    void infer(const WorkContext& wc);
+    void infer(const WorkContext& wc, cudaStream_t stream_infer);
     void drawObjects(FrameData& frame);
     bool reorderSkipBuffer(const FrameData& frame, threadSafeQueue& out2show);
 
-    cv::cuda::GpuMat blobFromGpuMat(cv::cuda::GpuMat& input, cv::cuda::Stream cvStream);
-    cv::cuda::GpuMat resizeKeepAspectRatioPadRightBottom(cv::cuda::GpuMat& input,
-                                                         const float       inp_h,
-                                                         const float       inp_W,
-                                                         const float       r,
-                                                         cv::cuda::Stream  cvStream);
+    void D2DBlobFromPadded(WorkContext& wc, cv::cuda::Stream cv_copy);
+    void resizeKeepAspectRatioPadRightBottom(WorkContext&     wc,
+                                             const float      inp_h,
+                                             const float      inp_W,
+                                             const float      r,
+                                             cv::cuda::Stream cv_copy);
 
 public:
     explicit YOLOv8(const std::string& engine_path);
@@ -40,7 +40,7 @@ public:
 
     // void makepipe();
     void VideoReader(std::string inputVideo, threadSafeQueue& read2work);
-    WorkContext initWorker();
+    std::vector<WorkContext> initWorkContext(uint32_t nbSlots);
     void runWorker(threadSafeQueue&read2work, threadSafeQueue& work2out);
     void Outputer(threadSafeQueue& work2out, threadSafeQueue& out2show);
 
