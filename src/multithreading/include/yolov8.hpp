@@ -2,10 +2,9 @@
 
 #include "common.hpp"
 #include "thread/thread.hpp"
-#include <NvInferRuntime.h>
-#include <memory>
-#include <opencv2/core/cuda.hpp>
-
+#include "pinnedMemoryPool.hpp"
+#include <cstddef>
+#include <string>
 
 class YOLOv8 {
 private:
@@ -17,11 +16,11 @@ private:
     std::shared_ptr<nvinfer1::ICudaEngine>       engine_;
     // std::unique_ptr<nvinfer1::IExecutionContext> context_;
     // cudaStream_t                                 stream_;
-    
+    const std::string input_video_path_;
     Logger  gLogger_;
 
 private:
-    void preProcess(WorkContext& wc, cv::cuda::Stream cv_copy);
+    void preProcess(WorkContext& wc, FrameData& frame, cv::cuda::Stream cv_copy);
     void postProcess(FrameData& frame);
     void infer(const WorkContext& wc, cudaStream_t stream_infer);
     void drawObjects(FrameData& frame);
@@ -31,27 +30,27 @@ private:
     void resizeKeepAspectRatioPadRightBottom(WorkContext&     wc,
                                              const float      inp_h,
                                              const float      inp_W,
+                                             const float      h,
+                                             const float      w,
                                              const float      r,
                                              cv::cuda::Stream cv_copy);
 
 public:
-    explicit YOLOv8(const std::string& engine_path);
+    explicit YOLOv8(const std::string& engine_path, const std::string& input_video_path, const uint32_t POOL_SIZE, const size_t max_img_size);
     ~YOLOv8();
 
     // void makepipe();
-    void VideoReader(std::string inputVideo, threadSafeQueue& read2work);
+    void VideoReader(threadSafeQueue& read2work);
     std::vector<WorkContext> initWorkContext(uint32_t nbSlots);
     void runWorker(threadSafeQueue&read2work, threadSafeQueue& work2out);
     void Outputer(threadSafeQueue& work2out, threadSafeQueue& out2show);
+    
+    void releasePinnedPtr(void* ptr);
 
     uint32_t             num_bindings_{0};
     uint32_t             num_inputs_{0};
     uint32_t             num_outputs_{0};
     std::vector<Binding> i_bindings_;
     std::vector<Binding> o_bindings_;
-    // std::vector<void*>   host_ptrs_;
-    // std::vector<void*>   device_ptrs_;
-    float                ratio_  = 1.0f;
-    float                height_ = 0.0f;
-    float                width_  = 0.0f;
+    PinnedMemoryPool     mem_pool_;
 };

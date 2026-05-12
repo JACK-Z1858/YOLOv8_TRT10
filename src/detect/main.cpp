@@ -117,6 +117,7 @@ int main(int argc, char** argv) {
             printf("cost %2.4lf ms\n", tc);
             cv::imshow("result", res);
             cv::waitKey(0);
+            // cv::imwrite("outputs/res.png", res);
         }
     }
     auto TTtc = std::chrono::duration<double, std::milli>(TTend - TTstart).count();

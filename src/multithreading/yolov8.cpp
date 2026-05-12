@@ -1,11 +1,10 @@
 #include "include/yolov8.hpp"
-#include "include/common.hpp"
+#include "include/pinnedMemoryPool.hpp"
 #include <NvInferPlugin.h>
-#include <NvInferRuntime.h>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
+#include <deque>
 #include <opencv2/core/cuda.hpp>
 #include <opencv2/core/cuda_stream_accessor.hpp>
 #include <opencv2/core/hal/interface.h>
@@ -19,9 +18,15 @@
 #include <ratio>
 #include <stdexcept>
 #include <fstream>
-#include <vector>
+#include <utility>
 
-YOLOv8::YOLOv8(const std::string& engine_path) {
+
+YOLOv8::YOLOv8(const std::string& engine_path, 
+               const std::string& video_path, 
+               const uint32_t POOL_SIZE, 
+               const size_t max_img_size)
+                : input_video_path_(video_path), mem_pool_(POOL_SIZE, max_img_size)
+{
     std::ifstream file(engine_path, std::ios::binary | std::ios::ate);
     auto size = file.tellg();
     file.seekg(0, std::ios::beg);
@@ -72,13 +77,13 @@ YOLOv8::~YOLOv8() {
 }
 
 
-void YOLOv8::VideoReader(std::string inputVideo, threadSafeQueue& read2work) {
+void YOLOv8::VideoReader(threadSafeQueue& read2work) {
     cv::VideoCapture    cap;
     
     try {
-        cap.open(std::stoi(inputVideo));
+        cap.open(std::stoi(input_video_path_));
     } catch(const std::exception &e) {
-        cap.open(inputVideo);
+        cap.open(input_video_path_);
     }
 
    // Try to use HD resolution (or closest resolution)
@@ -92,20 +97,27 @@ void YOLOv8::VideoReader(std::string inputVideo, threadSafeQueue& read2work) {
     std::cout << "New video resolution: (" << resW << "x" << resH << ")" << std::endl; 
 
     if (!cap.isOpened()) {
-        throw std::runtime_error("Uable to open video capture with input: " + inputVideo);
+        throw std::runtime_error("Uable to open video capture with input: " + input_video_path_);
     }
     
     uint32_t frameCount{0};
-    cv::Mat  img;
+    cv::Mat  temp_img;
 
     while(true) {
         auto start = std::chrono::system_clock::now();
-        ;
-        if(!cap.read(img)) break;
+        if(!cap.read(temp_img)) {
+            break;
+        }
+        void* ptr = mem_pool_.acquire();
+        cv::Mat pinned_mat(temp_img.rows, temp_img.cols, temp_img.type(), ptr);
+        temp_img.copyTo(pinned_mat);
+
         FrameData frame;
-        frame.frame_id = frameCount++;
-        frame.img      = img.clone();
+        frame.frame_id   = frameCount++;
+        frame.img        = pinned_mat;
+        frame.pinned_ptr = ptr;
         auto end = std::chrono::system_clock::now();
+
         frame.prof.t_read = (double)std::chrono::duration<double, std::milli>(end - start).count();
         frame.t_enqueue = std::chrono::steady_clock::now();
         if(!read2work.push(frame)) {
@@ -162,7 +174,7 @@ void YOLOv8::runWorker(threadSafeQueue& read2work, threadSafeQueue& work2out) {
     std::vector<cudaStream_t> stream_copy(nbSlots); 
     std::vector<cudaStream_t> stream_infer(nbSlots);
     
-    std::vector<cv::cuda::Stream> cv_copy(2);  
+    std::vector<cv::cuda::Stream> cv_copy(nbSlots);  
     std::vector<cudaEvent_t> ev_prep(nbSlots);
     std::vector<cudaEvent_t> ev_done(nbSlots);
     for (int i = 0; i < nbSlots; ++i) {
@@ -173,28 +185,52 @@ void YOLOv8::runWorker(threadSafeQueue& read2work, threadSafeQueue& work2out) {
         cv_copy[i] = cv::cuda::StreamAccessor::wrapStream(stream_copy[i]);
     }
 
+    std::deque<InFlight> q;
+    InFlight oldest;
     FrameData frame;
     while (read2work.pull(frame)) {
-        uint32_t slot = frame.frame_id % 2;
-        wc[slot].gpuMat.create(frame.img.rows, frame.img.cols, frame.img.type());   
-        wc[slot].gpuMat.upload(frame.img, cv_copy[slot]);
-        preProcess(wc[slot], cv_copy[slot]);
-        cudaEventRecord(ev_prep[slot], stream_copy[slot]);
+        if (q.size() == 1) {
+            oldest = q.front();
+            cudaEventSynchronize(ev_done[oldest.slot]);
+            oldest.frame.obj_ptr.clear();
+            for (auto ptr : wc[oldest.slot].host_ptrs) {
+                oldest.frame.obj_ptr.push_back(ptr);
+            }
 
-        cudaStreamWaitEvent(stream_infer[slot], ev_prep[slot]);
-        infer(wc[slot], stream_infer[slot]);    // 推理失败则标记failed输出原图，保证每个id都会出现一次
-        cudaEventRecord(ev_done[slot]);
-        // 如何保证数据从 host 拷贝出了
-        cudaEventSynchronize(ev_done[slot]);
-        frame.obj_ptr.clear();
-        for (auto ptr : wc[slot].host_ptrs) {
-            frame.obj_ptr.push_back(ptr);
+            postProcess(oldest.frame);
+            if(!work2out.push(oldest.frame)) {
+                break;
+            }
+            q.pop_front();
         }
-        postProcess(frame);
-        if(!work2out.push(frame)) {
+        uint32_t s = frame.frame_id & (nbSlots - 1);
+        wc[s].gpuMat.create(frame.img.rows, frame.img.cols, frame.img.type());   
+        wc[s].gpuMat.upload(frame.img, cv_copy[s]);
+        preProcess(wc[s], frame, cv_copy[s]);
+        cudaEventRecord(ev_prep[s], stream_copy[s]);
+
+        cudaStreamWaitEvent(stream_infer[s], ev_prep[s]);
+        infer(wc[s], stream_infer[s]);    // 推理失败则标记failed输出原图，保证每个id都会出现一次
+        cudaEventRecord(ev_done[s], stream_infer[s]);
+        // 如何保证数据从 host 拷贝出了
+        q.push_back({s, std::move(frame)});
+    }
+
+    while (!q.empty()) {
+        oldest = q.front();
+        cudaEventSynchronize(ev_done[oldest.slot]);
+        oldest.frame.obj_ptr.clear();
+        for (auto ptr : wc[oldest.slot].host_ptrs) {
+            oldest.frame.obj_ptr.push_back(ptr);
+        }
+
+        postProcess(oldest.frame);
+        if(!work2out.push(oldest.frame)) {
             break;
         }
+        q.pop_front();
     }
+
     for (int i = 0; i < nbSlots; ++i) {
         cudaStreamDestroy(stream_copy[i]);
         cudaStreamDestroy(stream_infer[i]);
@@ -254,16 +290,16 @@ bool YOLOv8::reorderSkipBuffer(const FrameData& frame, threadSafeQueue& out2show
     return true;
 }
 
-void YOLOv8::preProcess(WorkContext& wc, cv::cuda::Stream cv_copy) {
+void YOLOv8::preProcess(WorkContext& wc, FrameData& frame, cv::cuda::Stream cv_copy) {
     const auto& dim = i_bindings_[0].dims;
     const float inp_h = dim.d[2];
     const float inp_w = dim.d[3];
-    height_  = wc.gpuMat.rows;
-    width_   = wc.gpuMat.cols;
-    float r  = std::min(inp_h / height_, inp_w / width_);
-    ratio_   = 1 / r;
+    frame.height  = wc.gpuMat.rows;
+    frame.width   = wc.gpuMat.cols;
+    float r  = std::min(inp_h / frame.height, inp_w / frame.width);
+    frame.ratio   = 1 / r;
     
-    resizeKeepAspectRatioPadRightBottom(wc, inp_h, inp_w, r, cv_copy);
+    resizeKeepAspectRatioPadRightBottom(wc, inp_h, inp_w, r, frame.height, frame.width, cv_copy);
     D2DBlobFromPadded(wc, cv_copy);
 }
 
@@ -271,10 +307,12 @@ void YOLOv8::resizeKeepAspectRatioPadRightBottom(WorkContext&     wc,
                                                  const float      inp_h,
                                                  const float      inp_W,
                                                  const float      r,
+                                                 const float      h,
+                                                 const float      w,
                                                  cv::cuda::Stream cv_copy) 
 {
-    int unpad_h = r * height_;
-    int unpad_w = r * width_;
+    int unpad_h = r * h;
+    int unpad_w = r * w;
     wc.resized.create(unpad_h, unpad_w, CV_8UC3);
     cv::cuda::resize(wc.gpuMat, wc.resized, wc.resized.size(), 0, 0, cv::INTER_LINEAR, cv_copy);
 
@@ -328,10 +366,10 @@ void YOLOv8::postProcess(FrameData& frame) {
         float x1 = *ptr++;
         float y1 = *ptr;
         
-        x0 = clamp(x0 * ratio_, 0.f, width_);
-        x1 = clamp(x1 * ratio_, 0.f, width_);
-        y0 = clamp(y0 * ratio_, 0.f, height_);
-        y1 = clamp(y1 * ratio_, 0.f, height_);
+        x0 = clamp(x0 * frame.ratio, 0.f, frame.width);
+        x1 = clamp(x1 * frame.ratio, 0.f, frame.width);
+        y0 = clamp(y0 * frame.ratio, 0.f, frame.height);
+        y1 = clamp(y1 * frame.ratio, 0.f, frame.height);
 
         obj.rect.x = x0;
         obj.rect.y = y0;
@@ -365,5 +403,11 @@ void YOLOv8::drawObjects(FrameData& frame) {
         cv::rectangle(res, cv::Rect(x, y, label_size.width, label_size.height + baseLine), {0, 0, 255}, -1);
 
         cv::putText(res, text, cv::Point(x, y + label_size.height), cv::FONT_HERSHEY_SIMPLEX, 0.4, {255, 255, 255}, 1);
+    }
+}
+
+void YOLOv8::releasePinnedPtr(void* ptr) {
+    if (ptr != nullptr) {
+        mem_pool_.release(ptr);
     }
 }

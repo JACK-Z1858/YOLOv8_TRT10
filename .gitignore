@@ -5,6 +5,10 @@ build/
 yolov8_trt10
 yolov8_cpu
 multithreadingTest
+mThreadCUDA
+mCUDAslot
+MemPool
+
 *.pt
 *.engine
 *.onnx

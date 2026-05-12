@@ -11,7 +11,7 @@
 #include <opencv2/core/cuda.hpp>
 #include <string>
 #include <vector>
-#include "opencv2/core.hpp"
+
 
 //CUDA错误检查宏
 #define CHECK(call)                                                                 \
@@ -80,11 +80,21 @@ struct Object {
 
 struct FrameData {
     uint32_t              frame_id{};
-    std::vector<void*>    obj_ptr{};
     cv::Mat               img;
+    void*                 pinned_ptr;
+    std::vector<void*>    obj_ptr{};
     std::vector<Object>   objects;
     std::chrono::steady_clock::time_point t_enqueue{}; 
     profilingData         prof;
+
+    float height;
+    float width;
+    float ratio;
+};
+
+struct InFlight {
+    uint32_t slot;
+    FrameData frame;
 };
 
 struct WorkContext {

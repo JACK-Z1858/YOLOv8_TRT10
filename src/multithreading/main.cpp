@@ -1,6 +1,7 @@
-#include "include/thread/thread.hpp"
+#include "include/pinnedMemoryPool.hpp"
 #include "include/yolov8.hpp"
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <opencv2/highgui.hpp>
 #include <ostream>
@@ -26,14 +27,18 @@ int main(int argc, char *argv[]) {
     const std::string enginePath{argv[1]};
     const std::string videoPath{argv[2]};
     uint32_t nbWorkers = static_cast<uint32_t>(std::stoul(argv[3]));
-    YOLOv8 yolo(enginePath);
-    // yolo.makepipe();
 
     threadSafeQueue read2work("read2work",2);
     threadSafeQueue work2out("work2out",2);
     threadSafeQueue out2show("out2show", 2);
 
-    std::thread reader(&YOLOv8::VideoReader, &yolo, videoPath, std::ref(read2work));
+    const size_t   max_img_size = getMaxFrameBytes(videoPath);
+    const uint32_t POOL_SIZE    = 10;
+    YOLOv8 yolo(enginePath, videoPath, POOL_SIZE, max_img_size);
+
+
+    std::thread reader(&YOLOv8::VideoReader, &yolo, std::ref(read2work));
+    
     std::vector<std::thread> workers;
     workers.reserve(nbWorkers);
     for (int i = 0; i < nbWorkers; ++i) {
@@ -60,8 +65,8 @@ int main(int argc, char *argv[]) {
             t_e2e_sum += res.prof.t_e2e;
             
         }
-        //cv::imshow("result", res.img);
-        std::cout << "\rResult showed: "<< res.frame_id << std::flush;
+        cv::imshow("result", res.img);
+        // std::cout << "\rResult showed: "<< res.frame_id << std::flush;
         if (cv::waitKey(1) == 'q' || res.frame_id == 1000) {
             end = std::chrono::steady_clock::now();
             read2work.shutdown();
@@ -69,6 +74,7 @@ int main(int argc, char *argv[]) {
             out2show.shutdown();
             break;
         }
+        yolo.releasePinnedPtr(res.pinned_ptr);
     }
     auto tc = std::chrono::duration<double, std::milli>(end - start).count();
     cv::destroyAllWindows();
