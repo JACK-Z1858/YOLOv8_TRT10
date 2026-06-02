@@ -168,7 +168,7 @@ std::vector<WorkContext> YOLOv8::initWorkContext(uint32_t nbSlots) {
 }
 
 void YOLOv8::runWorker(threadSafeQueue& read2work, threadSafeQueue& work2out) {
-    uint32_t nbSlots = 2;
+    uint32_t nbSlots = 1;
     std::vector<WorkContext> wc = initWorkContext(nbSlots);
     
     std::vector<cudaStream_t> stream_copy(nbSlots); 

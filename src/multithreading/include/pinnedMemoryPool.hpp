@@ -1,12 +1,15 @@
 #pragma once
 #include "common.hpp"
+#include <atomic>
+#include <cstddef>
 #include <mutex>
 #include <queue>
 #include <condition_variable>
 #include <string>
+#include <vector>
 #include "opencv2/videoio.hpp"
 
-inline const size_t getMaxFrameBytes(const std::string& input_video_path) {
+inline const size_t getFirstFrameBytes(const std::string& input_video_path) {
      // Initialize pinned memory pool
      cv::VideoCapture cap(input_video_path);
      if (!cap.isOpened()) {
@@ -69,3 +72,54 @@ public:
         return buffer_size_;
     }
 };
+
+class LockFreePinnedMemoryPool {
+private:
+    struct FreeBlock {
+        FreeBlock* next;
+    };
+
+    std::atomic<FreeBlock*> head_{nullptr};
+    std::vector<void*>      all_allocated_;
+    size_t                  buffer_size_;
+
+public:
+    LockFreePinnedMemoryPool(int pool_size, size_t buffer_size) : buffer_size_(buffer_size) {
+        for (int i = 0; i < pool_size; ++i) {
+            void* ptr = nullptr;
+            cudaMallocHost(&ptr, buffer_size_);
+            all_allocated_.push_back(ptr);
+            auto* block = reinterpret_cast<FreeBlock*>(ptr);
+            block->next = head_.load(std::memory_order_relaxed);
+            head_.store(block, std::memory_order_relaxed);
+        }
+    }
+
+    void* acquire() {
+        FreeBlock* old_head = head_.load(std::memory_order_acquire);
+        while (old_head) {
+            if (head_.compare_exchange_weak(
+                old_head, old_head->next,
+                std::memory_order_acquire,
+                std::memory_order_relaxed))
+                {
+                    return old_head;
+                }
+        }
+        return nullptr;
+    }
+
+    void release(void* ptr) {
+        auto* block = reinterpret_cast<FreeBlock*>(ptr);
+        block->next = head_.load(std::memory_order_relaxed);
+        while (!head_.compare_exchange_weak(
+            block->next, block,
+            std::memory_order_release,
+            std::memory_order_relaxed));
+    }
+
+    ~LockFreePinnedMemoryPool() {
+        for (void* ptr : all_allocated_) cudaFreeHost(ptr);
+    }
+};
+

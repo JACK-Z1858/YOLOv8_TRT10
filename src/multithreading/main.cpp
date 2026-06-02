@@ -32,9 +32,9 @@ int main(int argc, char *argv[]) {
     threadSafeQueue work2out("work2out",2);
     threadSafeQueue out2show("out2show", 2);
 
-    const size_t   max_img_size = getMaxFrameBytes(videoPath);
+    const size_t   first_img_size = getFirstFrameBytes(videoPath);
     const uint32_t POOL_SIZE    = 10;
-    YOLOv8 yolo(enginePath, videoPath, POOL_SIZE, max_img_size);
+    YOLOv8 yolo(enginePath, videoPath, POOL_SIZE, first_img_size);
 
 
     std::thread reader(&YOLOv8::VideoReader, &yolo, std::ref(read2work));
@@ -65,8 +65,8 @@ int main(int argc, char *argv[]) {
             t_e2e_sum += res.prof.t_e2e;
             
         }
-        cv::imshow("result", res.img);
-        // std::cout << "\rResult showed: "<< res.frame_id << std::flush;
+        // cv::imshow("result", res.img);
+        std::cout << "\rResult showed: "<< res.frame_id << std::flush;
         if (cv::waitKey(1) == 'q' || res.frame_id == 1000) {
             end = std::chrono::steady_clock::now();
             read2work.shutdown();
@@ -87,11 +87,11 @@ int main(int argc, char *argv[]) {
     outer.join();
     std::cout << std::endl
               << "Measure Count: " << measureCount << std::endl
-              << "Avg read time: " << t_read_sum / measureCount << "ms" << std::endl
-              << "Avg PreProcess time: " << t_pre_sum / measureCount << "ms" << std::endl
-              << "Avg Inference time: " << t_infer_sum / measureCount << "ms" << std::endl
-              << "Avg PostProcess time: " << t_post_sum / measureCount << "ms" << std::endl
-              << "Avg Draw time: " << t_draw_sum / measureCount << "ms" << std::endl
+              // << "Avg read time: " << t_read_sum / measureCount << "ms" << std::endl
+              // << "Avg PreProcess time: " << t_pre_sum / measureCount << "ms" << std::endl
+              // << "Avg Inference time: " << t_infer_sum / measureCount << "ms" << std::endl
+              // << "Avg PostProcess time: " << t_post_sum / measureCount << "ms" << std::endl
+              // << "Avg Draw time: " << t_draw_sum / measureCount << "ms" << std::endl
               << "Avg End2End time: " << t_e2e_sum / measureCount << "ms" << std::endl
               << "Total time cost: " << tc << "ms" << std::endl;
     return 0;

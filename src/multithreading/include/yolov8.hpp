@@ -52,5 +52,5 @@ public:
     uint32_t             num_outputs_{0};
     std::vector<Binding> i_bindings_;
     std::vector<Binding> o_bindings_;
-    PinnedMemoryPool     mem_pool_;
+    LockFreePinnedMemoryPool     mem_pool_;
 };
