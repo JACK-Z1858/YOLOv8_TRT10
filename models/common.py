@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Portions derived from triple-Mu/YOLOv8-TensorRT (MIT); see THIRD_PARTY_NOTICES.md.
+
 from typing import Tuple
 
 import torch

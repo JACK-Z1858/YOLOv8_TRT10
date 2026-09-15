@@ -1,0 +1,26 @@
+%YAML:1.0
+---
+model:
+  engine: "models/yolov8s.engine"
+  device: 0
+
+input:
+  # Image, image directory, video, stream URL, or quoted camera index such as "0".
+  source: "data/passby.mp4"
+
+pipeline:
+  # Set workers to 1 for serial TensorRT execution.
+  workers: 4
+  queue_depth: 8
+
+output:
+  show: 1
+  # Leave empty to disable video output.
+  video: ""
+  fps: 30.0
+
+benchmark:
+  # Frames before this index are processed but omitted from averages.
+  warmup_frames: 30
+  # 0 means process the complete source.
+  max_frames: 1000
